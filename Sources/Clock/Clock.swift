@@ -233,11 +233,16 @@ import ServiceManagement
 
     func updatePanel() {
         let top = model.miniIsOnTop
-        if top { panel.styleMask.insert(.nonactivatingPanel) } else { panel.styleMask.remove(.nonactivatingPanel) }
-        panel.collectionBehavior = top ? [.canJoinAllSpaces,.fullScreenAuxiliary,.canJoinAllApplications] : [.canJoinAllSpaces,.fullScreenNone,.auxiliary]
+        panel.collectionBehavior = top ? [.canJoinAllSpaces,.fullScreenAuxiliary,.canJoinAllApplications] : [.fullScreenNone]
         panel.level = top ? .statusBar : .normal
-        if top && panel.isVisible { panel.orderFrontRegardless() }
-
+        opacityWindow?.level = panel.level
+        guard panel.isVisible else { return }
+        if top {
+            panel.orderFrontRegardless()
+        } else {
+            // Lowering the level can leave the panel in front of other normal windows.
+            panel.orderBack(nil)
+        }
     }
     private var opacityWindow: NSPanel?
     private var outsideClick: Any?
