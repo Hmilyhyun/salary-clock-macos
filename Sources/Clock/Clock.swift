@@ -12,6 +12,7 @@ import ServiceManagement
         }
     }
     var applyTop: (() -> Void)?
+    var applyLanguage: (() -> Void)?
     @Published var miniIsOnTop = true {
         didSet {
             store.set(miniIsOnTop, forKey: "top")
@@ -22,7 +23,12 @@ import ServiceManagement
     @Published var sheet = ""
     @Published var login = SMAppService.mainApp.status == .enabled
     @Published var error = ""
-    @Published var language = UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")?.string(forKey:"language") ?? (Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh-CN" : "en") { didSet { store.set(language,forKey:"language") } }
+    @Published var language: String {
+        didSet {
+            store.set(language, forKey: "language")
+            applyLanguage?()
+        }
+    }
     func label(_ key:String)->String { language == "en" ? Self.translations[key] ?? key : key }
     static let translations = ["设置":"Settings",
 "薪资详情":"Salary details",
@@ -66,6 +72,11 @@ import ServiceManagement
 "打开主界面":"Open main window",
 "迷你模式":"Mini mode",
 "退出":"Quit",
+"编辑":"Edit",
+"剪切":"Cut",
+"复制":"Copy",
+"粘贴":"Paste",
+"全选":"Select All",
 "置顶":"Always on top",
 "透明度":"Opacity",
 "每日":"Per day",
@@ -88,7 +99,7 @@ import ServiceManagement
             if old["followsSystemTheme"] as? Bool == false { store.set(old["themeMode"] as? String == "dark" ? "深色" : "浅色",forKey:"theme") }
         }
         miniIsOnTop = store.object(forKey:"top") as? Bool ?? true
-        if let saved = store.string(forKey:"language") { language = saved }
+        language = store.string(forKey: "language") ?? (Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh-CN" : "en")
         config = (try? JSONDecoder().decode(Config.self, from: store.data(forKey:"salary") ?? Data())) ?? Config()
     }
     func snapshot(_ date: Date) -> SalarySnapshot {
@@ -104,17 +115,34 @@ import ServiceManagement
         let item = NSMenuItem()
         menu.addItem(item)
         let commands = NSMenu()
-        let settings = commands.addItem(withTitle:controller.model.label("设置"),action:#selector(Controller.showSettings),keyEquivalent:",")
+        let settings = commands.addItem(withTitle:"",action:#selector(Controller.showSettings),keyEquivalent:",")
         settings.target = controller
-        commands.addItem(withTitle:controller.model.label("退出"),action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
+        let quit = commands.addItem(withTitle:"",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         item.submenu = commands
         let edit = NSMenuItem()
         menu.addItem(edit)
-        let editing = NSMenu(title:"Edit")
-        for (name,key) in [("Cut","x"),("Copy","c"),("Paste","v"),("Select All","a")] {
-            editing.addItem(withTitle:name,action:NSSelectorFromString(name == "Select All" ? "selectAll:" : name.lowercased() + ":"),keyEquivalent:key)
+        let editing = NSMenu()
+        let editCommands = [
+            ("剪切", "cut:", "x"),
+            ("复制", "copy:", "c"),
+            ("粘贴", "paste:", "v"),
+            ("全选", "selectAll:", "a")
+        ].map { title, action, shortcut in
+            (title, editing.addItem(withTitle: "", action: NSSelectorFromString(action), keyEquivalent: shortcut))
         }
         edit.submenu = editing
+        let model = controller.model
+        model.applyLanguage = { [weak model] in
+            guard let model else { return }
+            settings.title = model.label("设置")
+            quit.title = model.label("退出")
+            editing.title = model.label("编辑")
+            edit.title = editing.title
+            for (title, command) in editCommands {
+                command.title = model.label(title)
+            }
+        }
+        model.applyLanguage?()
         app.mainMenu = menu
         withExtendedLifetime(controller) { app.run() }
     }
@@ -436,7 +464,14 @@ struct Dashboard: View {
                         if model.config.enableLunchBreak {TextField(model.label("午休开始"),text:$model.config.lunchStart);TextField(model.label("午休结束"),text:$model.config.lunchEnd)}
                         }
                         if model.sheet != "首次设置" || model.step == 0 {
-                        Picker(model.label("语言"),selection:$model.language){ Text("中文").tag("zh-CN");Text("English").tag("en") }
+                        LabeledContent(model.label("语言")) {
+                            Picker(model.label("语言"), selection: $model.language) {
+                                Text("中文").tag("zh-CN")
+                                Text("English").tag("en")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
                         if model.sheet != "首次设置" { Button(model.label("重新配置")) { model.step = 0; model.sheet = "首次设置" } }
                         Toggle(model.label("金额滚动动画"),isOn:$rolling)
                         Picker(model.label("外观"),selection:$theme){ForEach(["系统","浅色","深色"],id:\.self){Text(model.label($0))}}
