@@ -1,19 +1,16 @@
 import SwiftUI
 import AppKit
-import JavaScriptCore
 import ServiceManagement
-extension JSValue { subscript(key: String) -> JSValue { forProperty(key) } }
-
-struct Config: Codable {
-    var salaryType = "monthly", monthlySalary = 10000.0, dailySalary = 360.0, hourlyRate = 45.0
-    var workDaysPerMonth = 22.0, workdays = [1,2,3,4,5]
-    var startTime = "09:30", endTime = "18:30", lunchStart = "12:00", lunchEnd = "13:30"
-    var enableLunchBreak = false
-}
 
 @MainActor final class Model: ObservableObject {
     let store = UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")!
-    @Published var config: Config { didSet { if snapshot(.now)["status"].toString() != "invalid-config" { store.set(try? JSONEncoder().encode(config), forKey:"salary") } } }
+    @Published var config: Config {
+        didSet {
+            if snapshot(.now).status != .invalidConfig, let data = try? JSONEncoder().encode(config) {
+                store.set(data, forKey: "salary")
+            }
+        }
+    }
     var applyTop: (() -> Void)?
     @Published var miniIsOnTop = true {
         didSet {
@@ -77,7 +74,6 @@ struct Config: Codable {
 "每秒":"Per second",
 "语言":"Language",
 "重新配置":"Run setup again"]
-    let engine = JSContext()!
     init() {
         if store.data(forKey:"salary") == nil,
            let dir = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask).first,
@@ -94,13 +90,9 @@ struct Config: Codable {
         miniIsOnTop = store.object(forKey:"top") as? Bool ?? true
         if let saved = store.string(forKey:"language") { language = saved }
         config = (try? JSONDecoder().decode(Config.self, from: store.data(forKey:"salary") ?? Data())) ?? Config()
-        let url = Bundle.main.url(forResource:"salary", withExtension:"js") ?? Bundle.module.url(forResource:"salary", withExtension:"js")!
-        engine.evaluateScript(try! String(contentsOf:url))
-        engine.evaluateScript("function snapshot(ms,c){return Salary.calculateSalarySnapshot(new Date(ms),c)}")
     }
-    func snapshot(_ date: Date) -> JSValue {
-        let configObject = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(config))
-        return engine.objectForKeyedSubscript("snapshot").call(withArguments:[date.timeIntervalSince1970 * 1000,configObject])!
+    func snapshot(_ date: Date) -> SalarySnapshot {
+        SalaryCalculator().snapshot(at: date, config: config)
     }
 }
 @main enum ClockApp {
@@ -369,7 +361,7 @@ struct Dashboard: View {
     var body: some View {
         TimelineView(.periodic(from:.now,by:1)) { time in
             let s = model.snapshot(time.date)
-            let amount = symbol + String(format:"%.2f",s["earnedToday"].toDouble())
+            let amount = symbol + String(format: "%.2f", s.earnedToday)
             if mini {
                 Text(amount).font(.title.bold()).monospacedDigit().frame(maxWidth:.infinity,maxHeight:.infinity).background(RoundedRectangle(cornerRadius:14).fill(Color(nsColor:.windowBackgroundColor).opacity(opacity))).contentShape(Rectangle()).accessibilityLabel(model.label("打开主界面") + " " + amount).accessibilityAction { controller.showMain() }.onTapGesture(count:2,perform:controller.showMain).contextMenu {
                     Toggle(model.label("置顶"),isOn:$model.miniIsOnTop)
@@ -383,14 +375,16 @@ struct Dashboard: View {
                         Button { model.sheet = "设置" } label:{ Image(systemName:"gearshape") }.accessibilityLabel(model.label("设置"))
                     }
                     Spacer()
-                    Text(model.label(["working":s["isNightWork"].toBool() ? "正在夜班" : "工作中","rest-day":"休息日","after-work":s["isNightWork"].toBool() ? "夜班已完成" : "已下班","before-work":"上班前","lunch-break":"午休中"][s["status"].toString()] ?? "请检查设置")).foregroundStyle(.secondary)
+                    Text(model.label(statusLabel(for: s))).foregroundStyle(.secondary)
                     Text(model.label("今日收入")).foregroundStyle(.secondary)
                     Text(amount).font(.system(size:54,weight:.bold,design:.rounded)).monospacedDigit().contentTransition(rolling ? .numericText() : .identity).animation(rolling ? .easeOut(duration:0.2) : nil,value:amount).onTapGesture(count:2,perform:controller.showMini)
                     VStack(spacing:16) {
-                        HStack { metric("已工作",duration(s["elapsedWorkMs"].toDouble()/1000))
-                            metric(["before-work":"距离上班","working":"距离下班","after-work":"今日完成","lunch-break":"距离复工","rest-day":"休息日"][s["status"].toString()] ?? "配置异常",s["status"].toString() == "after-work" ? "100%" : duration(s["nextTransitionMs"].toDouble()/1000))
-                            metric("预计收入",symbol + String(format:"%.2f",s["dailySalary"].toDouble())) }
-                        ProgressView(value:s["progress"].toDouble()).tint(.orange)
+                        HStack {
+                            metric("已工作", duration(s.elapsedWorkMs / 1000))
+                            metric(transitionLabel(for: s.status), s.status == .afterWork ? "100%" : duration(s.nextTransitionMs / 1000))
+                            metric("预计收入", symbol + String(format: "%.2f", s.dailySalary))
+                        }
+                        ProgressView(value: s.progress).tint(.orange)
                     }.padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:16))
                     Button(model.label("薪资详情")){model.sheet = "薪资详情"}.buttonStyle(.plain)
                     Spacer()
@@ -408,9 +402,10 @@ struct Dashboard: View {
                 if model.sheet == "薪资详情" {
                     Text(model.label(["daily":"日薪","hourly":"时薪"][model.config.salaryType] ?? "月薪")).foregroundStyle(.secondary)
                     let s = model.snapshot(.now)
-                    ForEach([("每日","dailySalary"),("每小时","hourlyRate"),("每分钟","minuteRate"),("每秒","secondRate")],id:\.0){ name,key in
-                        metric(name,symbol + String(format:key == "secondRate" ? "%.4f" : "%.2f",s[key].toDouble()))
-                    }
+                    metric("每日", symbol + String(format: "%.2f", s.dailySalary))
+                    metric("每小时", symbol + String(format: "%.2f", s.hourlyRate))
+                    metric("每分钟", symbol + String(format: "%.2f", s.minuteRate))
+                    metric("每秒", symbol + String(format: "%.4f", s.secondRate))
                 } else {
                     Form {
                         if model.sheet != "首次设置" || model.step == 1 {
@@ -458,10 +453,33 @@ struct Dashboard: View {
                         }
                     }.formStyle(.grouped)
                 }
-                if model.sheet != "薪资详情" && model.snapshot(.now)["status"].toString() == "invalid-config" { Text(model.language == "en" ? "Check the pay amount, workdays and shift times (HH:mm)." : "请检查薪资、工作日和上下班时间（HH:mm）。").foregroundStyle(.red) }
-                HStack { if model.sheet == "首次设置" && model.step > 0 { Button(model.language == "en" ? "Back" : "上一步"){model.step -= 1} }; if model.sheet == "首次设置" && model.step < 2 { Button(model.language == "en" ? "Next" : "下一步"){ model.step += 1 } } else { Button(model.label("完成")){ready = true; model.sheet = ""}.disabled(model.sheet != "薪资详情" && model.snapshot(.now)["status"].toString() == "invalid-config") } }
+                let invalidConfig = model.sheet != "薪资详情" && model.snapshot(.now).status == .invalidConfig
+                if invalidConfig { Text(model.language == "en" ? "Check the pay amount, workdays and shift times (HH:mm)." : "请检查薪资、工作日和上下班时间（HH:mm）。").foregroundStyle(.red) }
+                HStack { if model.sheet == "首次设置" && model.step > 0 { Button(model.language == "en" ? "Back" : "上一步"){model.step -= 1} }; if model.sheet == "首次设置" && model.step < 2 { Button(model.language == "en" ? "Next" : "下一步"){ model.step += 1 } } else { Button(model.label("完成")){ready = true; model.sheet = ""}.disabled(invalidConfig) } }
             }.padding().frame(width:470,height:model.sheet == "薪资详情" ? 320 : 610)
         }
     }
+    private func statusLabel(for snapshot: SalarySnapshot) -> String {
+        switch snapshot.status {
+        case .working: return snapshot.isNightWork ? "正在夜班" : "工作中"
+        case .afterWork: return snapshot.isNightWork ? "夜班已完成" : "已下班"
+        case .restDay: return "休息日"
+        case .beforeWork: return "上班前"
+        case .lunchBreak: return "午休中"
+        case .invalidConfig: return "请检查设置"
+        }
+    }
+
+    private func transitionLabel(for status: SalaryStatus) -> String {
+        switch status {
+        case .working: return "距离下班"
+        case .afterWork: return "今日完成"
+        case .restDay: return "休息日"
+        case .beforeWork: return "距离上班"
+        case .lunchBreak: return "距离复工"
+        case .invalidConfig: return "配置异常"
+        }
+    }
+
     func metric(_ title:String,_ value:String)->some View { VStack {Text(model.label(title)).font(.caption).foregroundStyle(.secondary);Text(value).monospacedDigit().bold()}.frame(maxWidth:.infinity) }
 }

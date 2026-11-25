@@ -17,7 +17,14 @@ Salary Clock 是一个 macOS 原生桌面工资时钟。输入月薪、日薪或
 open "build/Salary Clock.app"
 ```
 
-脚本通过 Swift Package Manager 构建，打包图标和薪资计算资源，并进行本机临时签名。将构建出的应用复制到「应用程序」后，可以在应用设置中开启登录启动。
+脚本通过 Swift Package Manager 构建，打包应用和图标，并进行本机临时签名。将构建出的应用复制到「应用程序」后，可以在应用设置中开启登录启动。
+
+薪资计算回归测试需要 Swift 6 或更高版本，可运行 `swift test --disable-xctest`。如果 Command Line Tools 未找到 `TestingMacros`，可显式指定其插件目录。
+
+```sh
+swift test --disable-xctest \
+  -Xswiftc -plugin-path -Xswiftc "$(xcode-select -p)/usr/lib/swift/host/plugins/testing"
+```
 
 ## 设置与迁移
 
@@ -25,7 +32,7 @@ open "build/Salary Clock.app"
 
 ## 来源与许可
 
-Salary Clock 是基于 [PayDance](https://github.com/MrBaoboer/PayDance) 修改的独立、非官方 macOS 版本。界面与窗口管理使用 SwiftUI 和 AppKit 重新实现，通过 JavaScriptCore 运行源自 PayDance 的薪资计算代码，并使用独立的应用图标。
+Salary Clock 是基于 [PayDance](https://github.com/MrBaoboer/PayDance) 修改的独立、非官方 macOS 版本。界面与窗口管理使用 SwiftUI 和 AppKit，薪资计算逻辑由 PayDance 移植到 Swift，应用使用独立图标。
 
 Based on PayDance. Copyright (C) 2026 Mr.Baoboer. Licensed under the GNU Affero General Public License v3.0 only.
 
