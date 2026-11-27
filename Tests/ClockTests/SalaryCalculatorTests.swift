@@ -63,6 +63,24 @@ struct SalaryCalculatorTests {
         let restDay = calculator.snapshot(at: try date("2024-05-05T12:00:00Z"), config: config)
         #expect(restDay.status == .restDay)
         #expect(restDay.earnedToday == 0)
+        #expect(restDay.earningsTimeline.isEmpty)
+    }
+
+    @Test func testEarningsTimelineStopsAtNowAndLevelsOffDuringLunch() throws {
+        let calculator = SalaryCalculator(timeZone: TimeZone(secondsFromGMT: 0)!)
+        var config = Config()
+        config.enableLunchBreak = true
+
+        let duringLunch = try date("2024-05-06T12:30:00Z")
+        let onBreak = calculator.snapshot(at: duringLunch, config: config)
+        let lunchTimes: [Double] = [0, 2.5 / 9, 3.0 / 9]
+        #expect(onBreak.earningsTimeline.map(\.elapsed) == lunchTimes)
+        #expect(onBreak.earningsTimeline.map(\.earned) == [0, onBreak.progress, onBreak.progress])
+
+        let working = calculator.snapshot(at: try date("2024-05-06T15:30:00Z"), config: config)
+        let afternoonTimes: [Double] = [0, 2.5 / 9, 4.0 / 9, 6.0 / 9]
+        #expect(working.earningsTimeline.map(\.elapsed) == afternoonTimes)
+        #expect(working.earningsTimeline.map(\.earned) == [0, onBreak.progress, onBreak.progress, working.progress])
     }
 
     @Test func testDaylightSavingGapAndRepeatedHour() throws {

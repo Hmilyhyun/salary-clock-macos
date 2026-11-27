@@ -21,6 +21,11 @@ enum SalaryStatus: String {
     case afterWork = "after-work"
 }
 
+struct EarningsPoint {
+    let elapsed: Double
+    let earned: Double
+}
+
 struct SalarySnapshot {
     var earnedToday = 0.0
     var dailySalary = 0.0
@@ -33,6 +38,7 @@ struct SalarySnapshot {
     var elapsedWorkMs = 0.0
     var nextTransitionMs = 0.0
     var isNightWork = false
+    var earningsTimeline: [EarningsPoint] = []
 
     var isWorking: Bool { status == .working }
 }
@@ -154,8 +160,23 @@ struct SalaryCalculator {
             hourlyRate: hourlyRate, minuteRate: minuteRate, secondRate: minuteRate / 60,
             progress: progress, status: status, workMsToday: totalWorkMs,
             elapsedWorkMs: elapsedWorkMs, nextTransitionMs: nextTransitionMs,
-            isNightWork: isNightWork
+            isNightWork: isNightWork, earningsTimeline: earningsTimeline(in: spans, nowMs: nowMs, totalWorkMs: totalWorkMs)
         )
+    }
+
+    private func earningsTimeline(in spans: [Span], nowMs: Double, totalWorkMs: Double) -> [EarningsPoint] {
+        let paid = spans.filter { $0.end > $0.start }
+        let boundaries = Set(paid.flatMap { [milliseconds($0.start), milliseconds($0.end)] })
+        guard let startMs = boundaries.min(), let endMs = boundaries.max(), endMs > startMs else { return [] }
+        let currentMs = min(max(nowMs, startMs), endMs)
+        let times = boundaries.filter { $0 < currentMs }.sorted() + [currentMs]
+        return times.map { time in
+            let accrued = paid.reduce(0.0) { sum, span in
+                let spanStart = milliseconds(span.start)
+                return sum + min(max(0, time - spanStart), milliseconds(span.end) - spanStart)
+            }
+            return EarningsPoint(elapsed: (time - startMs) / (endMs - startMs), earned: accrued / totalWorkMs)
+        }
     }
 
     private func hasValidPay(_ config: Config) -> Bool {

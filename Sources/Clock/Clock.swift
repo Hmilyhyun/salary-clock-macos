@@ -52,10 +52,12 @@ import ServiceManagement
 "系统":"System",
 "浅色":"Light",
 "深色":"Dark",
+"上涨":"Market Rise",
 "迷你窗置顶":"Keep mini window on top",
 "迷你窗透明度":"Mini window opacity",
 "登录时启动":"Launch at login",
 "今日收入":"Today's earnings",
+"工作进度":"Shift progress",
 "已工作":"Time worked",
 "预计收入":"Estimated earnings",
 "工作中":"Working",
@@ -378,13 +380,15 @@ struct Dashboard: View {
     let controller: Controller
     var mini = false
 
+    @Environment(\.colorScheme) private var scheme
     @AppStorage("rolling",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var rolling = true
     @AppStorage("symbol",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var symbol = "¥"
-    @AppStorage("theme",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var theme = "系统"
+    @AppStorage("theme",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var theme = ClockTheme.system
     @AppStorage("restartDockToHideRecent",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var restartDockToHideRecent = false
     @AppStorage("opacity",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var opacity = 0.85
     @AppStorage("ready",store:UserDefaults(suiteName:"local.PayDanceMac.Clock.preferences")) var ready = false
 
+    private var palette: MarketPalette { MarketPalette(scheme: scheme) }
 
     func duration(_ seconds:Double)->String {
         let minutes = max(0, Int(seconds / 60))
@@ -396,34 +400,42 @@ struct Dashboard: View {
             let s = model.snapshot(time.date)
             let amount = symbol + String(format: "%.2f", s.earnedToday)
             if mini {
-                Text(amount).font(.title.bold()).monospacedDigit().frame(maxWidth:.infinity,maxHeight:.infinity).background(RoundedRectangle(cornerRadius:14).fill(Color(nsColor:.windowBackgroundColor).opacity(opacity))).contentShape(Rectangle()).accessibilityLabel(model.label("打开主界面") + " " + amount).accessibilityAction { controller.showMain() }.onTapGesture(count:2,perform:controller.showMain).contextMenu {
+                Group {
+                    if theme == .market {
+                        MarketMiniAmount(amount: amount, progress: s.progress, opacity: opacity, palette: palette)
+                    } else {
+                        Text(amount).font(.title.bold()).monospacedDigit().frame(maxWidth:.infinity,maxHeight:.infinity)
+                            .background(RoundedRectangle(cornerRadius:14).fill(Color(nsColor:.windowBackgroundColor).opacity(opacity)))
+                    }
+                }
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(model.label("打开主界面") + " " + amount)
+                .accessibilityAction { controller.showMain() }
+                .onTapGesture(count:2,perform:controller.showMain)
+                .contextMenu {
                     Toggle(model.label("置顶"),isOn:$model.miniIsOnTop)
                     Button(model.label("透明度")) { controller.showOpacity() }
                     Button(model.label("打开主界面"),action:controller.showMain)
                 }
+            } else if theme == .market {
+                marketDashboard(snapshot: s, amount: amount, palette: palette)
             } else {
                 VStack(spacing:22) {
-                    HStack { Spacer()
-                        Button(action:controller.showMini){Image(systemName:"rectangle.compress.vertical")}.accessibilityLabel(model.label("迷你模式"))
-                        Button { model.sheet = "设置" } label:{ Image(systemName:"gearshape") }.accessibilityLabel(model.label("设置"))
-                    }
+                    HStack { Spacer(); windowControls }
                     Spacer()
                     Text(model.label(statusLabel(for: s))).foregroundStyle(.secondary)
                     Text(model.label("今日收入")).foregroundStyle(.secondary)
-                    Text(amount).font(.system(size:54,weight:.bold,design:.rounded)).monospacedDigit().contentTransition(rolling ? .numericText() : .identity).animation(rolling ? .easeOut(duration:0.2) : nil,value:amount).onTapGesture(count:2,perform:controller.showMini)
+                    earningsAmount(amount)
                     VStack(spacing:16) {
-                        HStack {
-                            metric("已工作", duration(s.elapsedWorkMs / 1000))
-                            metric(transitionLabel(for: s.status), s.status == .afterWork ? "100%" : duration(s.nextTransitionMs / 1000))
-                            metric("预计收入", symbol + String(format: "%.2f", s.dailySalary))
-                        }
+                        metrics(for: s)
                         ProgressView(value: s.progress).tint(.orange)
                     }.padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:16))
                     Button(model.label("薪资详情")){model.sheet = "薪资详情"}.buttonStyle(.plain)
                     Spacer()
                 }.padding()
             }
-        }.preferredColorScheme(theme == "系统" ? nil : theme == "深色" ? .dark : .light)
+        }.preferredColorScheme(theme.colorScheme)
         .onAppear { if !mini && !ready { model.sheet = "首次设置" } }
         .sheet(isPresented:Binding(get:{!mini && !model.sheet.isEmpty},set:{if !$0 {model.sheet = ""}})) {
             VStack {
@@ -474,7 +486,11 @@ struct Dashboard: View {
                         }
                         if model.sheet != "首次设置" { Button(model.label("重新配置")) { model.step = 0; model.sheet = "首次设置" } }
                         Toggle(model.label("金额滚动动画"),isOn:$rolling)
-                        Picker(model.label("外观"),selection:$theme){ForEach(["系统","浅色","深色"],id:\.self){Text(model.label($0))}}
+                        Picker(model.label("外观"), selection: $theme) {
+                            ForEach(ClockTheme.allCases, id: \.self) { option in
+                                Text(model.label(option.rawValue)).tag(option)
+                            }
+                        }
                         Toggle(model.label("迷你窗置顶"),isOn:$model.miniIsOnTop)
                         Slider(value:$opacity,in:0.1...1){Text(model.label("迷你窗透明度"))}
                         Toggle(model.language == "en" ? "Restart Dock to hide the recent app in mini mode" : "迷你模式下重启 Dock 以隐藏最近使用图标", isOn:$restartDockToHideRecent)
@@ -496,9 +512,108 @@ struct Dashboard: View {
                 let invalidConfig = model.sheet != "薪资详情" && model.snapshot(.now).status == .invalidConfig
                 if invalidConfig { Text(model.language == "en" ? "Check the pay amount, workdays and shift times (HH:mm)." : "请检查薪资、工作日和上下班时间（HH:mm）。").foregroundStyle(.red) }
                 HStack { if model.sheet == "首次设置" && model.step > 0 { Button(model.language == "en" ? "Back" : "上一步"){model.step -= 1} }; if model.sheet == "首次设置" && model.step < 2 { Button(model.language == "en" ? "Next" : "下一步"){ model.step += 1 } } else { Button(model.label("完成")){ready = true; model.sheet = ""}.disabled(invalidConfig) } }
-            }.padding().frame(width:470,height:model.sheet == "薪资详情" ? 320 : 610)
+            }.tint(theme == .market ? palette.accent : nil)
+                .padding().frame(width:470,height:model.sheet == "薪资详情" ? 320 : 610)
+                .background { if theme == .market { palette.canvas } }
         }
     }
+
+    private var windowControls: some View {
+        Group {
+            Button(action: controller.showMini) { Image(systemName: "rectangle.compress.vertical") }
+                .accessibilityLabel(model.label("迷你模式"))
+            Button { model.sheet = "设置" } label: { Image(systemName: "gearshape") }
+                .accessibilityLabel(model.label("设置"))
+        }
+    }
+
+    private func earningsAmount(_ amount: String) -> some View {
+        Text(amount)
+            .font(.system(size: 54, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .contentTransition(rolling ? .numericText() : .identity)
+            .animation(rolling ? .easeOut(duration: 0.2) : nil, value: amount)
+            .onTapGesture(count: 2, perform: controller.showMini)
+    }
+
+    private func marketDashboard(snapshot: SalarySnapshot, amount: String, palette: MarketPalette) -> some View {
+        let card = RoundedRectangle(cornerRadius: 20)
+        return VStack(spacing: 14) {
+            HStack { Spacer(); windowControls }
+                .buttonStyle(.bordered)
+                .tint(palette.accent)
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(model.label("今日收入"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(palette.muted)
+                    Spacer()
+                    Label(model.label(statusLabel(for: snapshot)),
+                          systemImage: snapshot.isWorking ? "arrow.up.right" : "clock")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(snapshot.isWorking ? palette.accent : palette.muted)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(palette.surface, in: Capsule())
+                }
+                earningsAmount(amount)
+                    .foregroundStyle(palette.accent)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                EarningsChart(snapshot: snapshot, palette: palette)
+                if !snapshot.earningsTimeline.isEmpty {
+                    HStack {
+                        Text(model.label("上班时间"))
+                        Spacer()
+                        Text(model.label("下班时间"))
+                    }
+                    .font(.caption)
+                    .foregroundStyle(palette.muted)
+                    .padding(.horizontal, 4)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(palette.cardFill, in: card)
+            .overlay { card.strokeBorder(palette.border, lineWidth: 1).allowsHitTesting(false) }
+
+            VStack(spacing: 11) {
+                metrics(for: snapshot, labelColor: palette.muted)
+                MarketProgress(progress: snapshot.progress, palette: palette)
+                    .frame(height: 5)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(model.label("工作进度"))
+                    .accessibilityValue(Text(snapshot.progress, format: .percent.precision(.fractionLength(0))))
+            }
+            .padding(13)
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(palette.border, lineWidth: 1).allowsHitTesting(false) }
+
+            Button { model.sheet = "薪资详情" } label: {
+                HStack(spacing: 5) {
+                    Text(model.label("薪资详情"))
+                    Image(systemName: "chevron.right").font(.caption)
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(palette.accent)
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .foregroundStyle(palette.ink, palette.muted)
+        .background(palette.canvas)
+    }
+
+    private func metrics(for snapshot: SalarySnapshot, labelColor: Color? = nil) -> some View {
+        HStack {
+            metric("已工作", duration(snapshot.elapsedWorkMs / 1000), labelColor: labelColor)
+            metric(transitionLabel(for: snapshot.status), snapshot.status == .afterWork ? "100%" : duration(snapshot.nextTransitionMs / 1000), labelColor: labelColor)
+            metric("预计收入", symbol + String(format: "%.2f", snapshot.dailySalary), labelColor: labelColor)
+        }
+    }
+
     private func statusLabel(for snapshot: SalarySnapshot) -> String {
         switch snapshot.status {
         case .working: return snapshot.isNightWork ? "正在夜班" : "工作中"
@@ -521,5 +636,13 @@ struct Dashboard: View {
         }
     }
 
-    func metric(_ title:String,_ value:String)->some View { VStack {Text(model.label(title)).font(.caption).foregroundStyle(.secondary);Text(value).monospacedDigit().bold()}.frame(maxWidth:.infinity) }
+    func metric(_ title: String, _ value: String, labelColor: Color? = nil) -> some View {
+        VStack {
+            Text(model.label(title))
+                .font(.caption)
+                .foregroundStyle(labelColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+            Text(value).monospacedDigit().bold()
+        }
+        .frame(maxWidth: .infinity)
+    }
 }
